@@ -1,0 +1,27 @@
+[project]
+name = "axionn"
+version = "0.1.0"
+description = "A high-level functional neural network library built on Axiom."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    # AxioNN binds to axiom-jax. Because we do not force any hardware extras, it seamlessly binds to any user JAX hardware environment.
+    # If axiom is not yet on PyPI, you can omit it here and document that it
+    # must be pre-installed, or use a Git reference if public.
+    "axiom-jax",
+    "datasets",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "ruff>=0.3.0",
+    "mypy>=1.9.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.uv.sources]
+axiom-jax = { git = "https://github.com/Adam-Jacuch/Axiom2" }
