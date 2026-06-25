@@ -40,8 +40,8 @@ class StatefulTopologicalStream:
         self.dataset = self.dataset.shuffle(seed=seed, buffer_size=buffer_size)
 
         self.iterator = iter(self.dataset)
-        self.token_buffer = []
-        self.batch_buffer = []
+        self.token_buffer: list[Any] = []
+        self.batch_buffer: list[Any] = []
 
     def __iter__(self):
         return self
@@ -57,11 +57,18 @@ class StatefulTopologicalStream:
 
             if self.tokenizer is not None:
                 # Tokenize raw text on-the-fly
-                text = example[self.text_key]
-                if hasattr(self.tokenizer, "encode") and callable(self.tokenizer.encode):
-                    tokens = self.tokenizer.encode(text)
+                raw_data = example[self.text_key]
+                if (
+                    isinstance(raw_data, list)
+                    and len(raw_data) > 0
+                    and all(isinstance(item, dict) for item in raw_data)
+                    and any("role" in item for item in raw_data)
+                ):
+                    tokens = self.tokenizer.apply_chat_template(raw_data, tokenize=True)
+                elif hasattr(self.tokenizer, "encode") and callable(self.tokenizer.encode):
+                    tokens = self.tokenizer.encode(raw_data)
                 elif callable(self.tokenizer):
-                    res = self.tokenizer(text)
+                    res = self.tokenizer(raw_data)
                     tokens = res["input_ids"] if isinstance(res, dict) else res
                 else:
                     raise ValueError("Tokenizer must be callable or have an '.encode()' method.")

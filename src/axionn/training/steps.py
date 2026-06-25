@@ -99,51 +99,53 @@ def general_step(
     return updated_model, updated_optim, loss
 
 
-def build_trainer(
+class Trainer:
+    """
+    Stateful trainer that handles model parameters, optimizer state,
+    and compiled training steps.
+    """
+    def __init__(
+        self,
         model: Any,
         optimizer: Any,
         loss_fn: Optional[Any] = None,
         autoregressive: Optional[Axis] = None,
-):
-    """
-    Unified training factory returning a compiled generator interface (.send(x)).
-    """
-    from axiom import ax
+    ):
+        from axiom import ax
 
-    opt_state = optimizer.init(model)
+        self.model = model
+        self.optimizer = optimizer
+        self.opt_state = optimizer.init(model)
 
-    if autoregressive is not None:
-        # Autoregressive sequence training
-        step_loss_fn = loss_fn if loss_fn is not None else cross_entropy_loss
+        if autoregressive is not None:
+            # Autoregressive sequence training
+            step_loss_fn = loss_fn if loss_fn is not None else cross_entropy_loss
 
-        @ax.jit
-        def train_step(m, state, data):
-            m_up, (_, s_up), loss_val = autoregressive_ce_step(m, (optimizer, state), data, autoregressive, step_loss_fn)
-            return m_up, s_up, loss_val
+            @ax.jit
+            def train_step(m, state, data):
+                m_up, (_, s_up), loss_val = autoregressive_ce_step(
+                    m, (optimizer, state), data, autoregressive, step_loss_fn
+                )
+                return m_up, s_up, loss_val
 
-        def trainer_generator():
-            data = yield
-            while True:
-                nonlocal model, opt_state
-                model, opt_state, loss = train_step(model, opt_state, data)
-                data = yield loss
-    else:
-        # Supervised target-based training (e.g. MSE or general loss)
-        step_loss_fn = loss_fn if loss_fn is not None else mse_loss
+            self._compiled_step = train_step
+        else:
+            # Supervised target-based training (e.g. MSE or general loss)
+            step_loss_fn = loss_fn if loss_fn is not None else mse_loss
 
-        @ax.jit
-        def train_step(m, state, inp, targets):
-            m_up, (_, s_up), loss_val = general_step(m, (optimizer, state), inp, targets, step_loss_fn)
-            return m_up, s_up, loss_val
+            @ax.jit
+            def train_step(m, state, inp, targets):
+                m_up, (_, s_up), loss_val = general_step(
+                    m, (optimizer, state), inp, targets, step_loss_fn
+                )
+                return m_up, s_up, loss_val
 
-        def trainer_generator():
-            pair = yield
-            while True:
-                nonlocal model, opt_state
-                inp, targets = pair
-                model, opt_state, loss = train_step(model, opt_state, inp, targets)
-                pair = yield loss
+            self._compiled_step = train_step
 
-    gen = trainer_generator()
-    next(gen)  # Prime the generator
-    return gen
+    def step(self, *args) -> Tensor:
+        """
+        Executes compiled step function, updates model and opt_state,
+        and returns the loss.
+        """
+        self.model, self.opt_state, loss = self._compiled_step(self.model, self.opt_state, *args)
+        return loss

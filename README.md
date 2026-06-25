@@ -41,7 +41,7 @@ In traditional deep learning libraries, developers must constantly track tensor 
 - **`StatefulTopologicalStream`**: Infinite sequence-packing dataloader streaming directly from Hugging Face Datasets. Supports on-the-fly tokenization, near-zero RAM footprint, and complete state serialization (`state_dict` / `load_state_dict`) for seamless preemption/resumption.
 
 ### 🛠️ Unified Training & Telemetry (`axionn.training`)
-- **`build_trainer`**: Compiles models into a unified generator interface (`.send()`), auto-initializing optimizer states, executing JIT-compiled training steps, and returning step-by-step losses.
+- **`Trainer`**: Stateful class that compiles models, auto-initializes optimizer states, executes JIT-compiled training steps (`.step()`), and returns step-by-step losses.
 - **`LocalRunLogger`**: Fast, structured local logger that saves configuration hyperparameters, writes metrics to JSON Lines (`metrics.jsonl`), and logs real-time throughput metrics (tokens/sec).
 
 ---
@@ -78,7 +78,7 @@ import optax
 from transformers import AutoTokenizer
 from axiom import ax, nn
 from axionn.nn import MHA
-from axionn.training import build_trainer, LocalRunLogger
+from axionn.training import Trainer, LocalRunLogger
 from axionn.data.stream import build_topological_stream
 
 # 1. Define structured input/output axes
@@ -123,7 +123,7 @@ stream = build_topological_stream(
 
 # 4. Build Trainer and Local Logger
 optimizer = optax.adam(1e-3)
-trainer = build_trainer(transformer, optimizer, autoregressive=cfg.s)
+trainer = Trainer(transformer, optimizer, autoregressive=cfg.s)
 
 logger = LocalRunLogger(
     run_name="transformer_stories",
@@ -141,7 +141,7 @@ logger = LocalRunLogger(
 print("Training started...")
 for i in range(100):
     x_batch = next(stream)
-    loss = trainer.send(x_batch)  # Compiled step forward/backward
+    loss = trainer.step(x_batch)  # Compiled step forward/backward
     
     # Log metrics & throughput (tokens/sec)
     tokens_processed = cfg.b.size * cfg.s.size

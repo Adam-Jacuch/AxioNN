@@ -9,7 +9,7 @@ import optax
 import axiom
 from axiom.core import Axis, wrap, Tensor
 from axionn.nn.attention import GQA, MHA
-from axionn.training.steps import autoregressive_ce_step, mse_step, build_trainer
+from axionn.training.steps import autoregressive_ce_step, mse_step, Trainer
 from axionn.data.stream import build_topological_stream
 from axionn.alignment.stateless import dpo_step, kto_step
 from axionn.nn import ssm_scan, conv
@@ -486,9 +486,9 @@ def test_conv_multi_channel():
     assert out.unwrap().shape == (2, 8, 4, 8)
 
 
-# --- Tests for build_trainer generator factory ---
+# --- Tests for stateful Trainer class ---
 
-def test_build_trainer_autoregressive():
+def test_trainer_autoregressive():
     batch = Axis("batch", 2)
     seq = Axis("seq", 8)
     
@@ -504,15 +504,17 @@ def test_build_trainer_autoregressive():
     model.init(batch, seq)
     
     optimizer = optax.adam(1e-3)
-    trainer = build_trainer(model, optimizer, autoregressive=seq)
+    trainer = Trainer(model, optimizer, autoregressive=seq)
     
-    loss = trainer.send(tokens)
+    loss = trainer.step(tokens)
     assert isinstance(loss, Tensor)
     assert loss.topology == ()
     assert loss.unwrap() > 0
+    assert trainer.model is not None
+    assert trainer.opt_state is not None
 
 
-def test_build_trainer_supervised():
+def test_trainer_supervised():
     batch = Axis("batch", 4)
     d_model = Axis("d_model", 16)
     d_out = Axis("d_out", 8)
@@ -527,14 +529,17 @@ def test_build_trainer_supervised():
     model.init(batch, d_model)
     
     optimizer = optax.adam(1e-3)
-    trainer = build_trainer(model, optimizer)
+    trainer = Trainer(model, optimizer)
     
-    loss = trainer.send((x, y))
+    loss = trainer.step(x, y)
     assert isinstance(loss, Tensor)
     assert loss.topology == ()
     assert loss.unwrap() > 0
+    assert trainer.model is not None
+    assert trainer.opt_state is not None
 
-def test_build_trainer_autoregressive_custom_loss():
+
+def test_trainer_autoregressive_custom_loss():
     batch = Axis("batch", 2)
     seq = Axis("seq", 8)
     feature = Axis("feature", 10)
@@ -550,15 +555,15 @@ def test_build_trainer_autoregressive_custom_loss():
     
     # We pass a custom loss function (e.g. mse_loss)
     from axiom.nn import mse_loss
-    trainer = build_trainer(model, optimizer, loss_fn=mse_loss, autoregressive=seq)
+    trainer = Trainer(model, optimizer, loss_fn=mse_loss, autoregressive=seq)
     
-    loss = trainer.send(data)
+    loss = trainer.step(data)
     assert isinstance(loss, Tensor)
     assert loss.topology == ()
     assert loss.unwrap() > 0
 
 
-def test_build_trainer_supervised_custom_loss():
+def test_trainer_supervised_custom_loss():
     batch = Axis("batch", 4)
     d_model = Axis("d_model", 16)
     d_out = Axis("d_out", 8)
@@ -577,12 +582,130 @@ def test_build_trainer_supervised_custom_loss():
         return (preds - targets).abs().mean()
         
     optimizer = optax.adam(1e-3)
-    trainer = build_trainer(model, optimizer, loss_fn=custom_l1_loss)
+    trainer = Trainer(model, optimizer, loss_fn=custom_l1_loss)
     
-    loss = trainer.send((x, y))
+    loss = trainer.step(x, y)
     assert isinstance(loss, Tensor)
     assert loss.topology == ()
     assert loss.unwrap() > 0
+
+
+# --- Tests for StatefulTopologicalStream chat dataset support ---
+
+def test_stateful_topological_stream_chat_template():
+    # Define axes
+    seq = Axis("seq", 8)
+    batch = Axis("batch", 2)
+
+    # Mock dataset with chat format
+    mock_chat_data = [
+        {"text": [{"role": "user", "content": "hello"}, {"role": "assistant", "content": "hi"}]},
+        {"text": [{"role": "user", "content": "how are you?"}, {"role": "assistant", "content": "doing well"}]},
+        {"text": [{"role": "user", "content": "great"}, {"role": "assistant", "content": "thanks"}]}
+    ]
+
+    class MockIterator:
+        def __init__(self, data):
+            self.data = data
+            self.idx = 0
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            if self.idx >= len(self.data):
+                raise StopIteration
+            res = self.data[self.idx]
+            self.idx += 1
+            return res
+
+    class MockTokenizer:
+        def apply_chat_template(self, chat, tokenize=True):
+            # Return some fake token list based on chat content
+            return [101, 102, 103, 104]
+
+    # Patch load_dataset to return our MockIterator/iterable
+    with patch("axionn.data.stream.load_dataset") as mock_load:
+        class MockDataset:
+            def shuffle(self, *args, **kwargs):
+                return self
+            def __iter__(self):
+                return MockIterator(mock_chat_data)
+
+        mock_load.return_value = MockDataset()
+
+        tokenizer = MockTokenizer()
+        stream = build_topological_stream(
+            "dummy_path",
+            seq_ax=seq,
+            batch_ax=batch,
+            tokenizer=tokenizer,
+            text_key="text"
+        )
+
+        # Draw a batch from the stream
+        batch_tensor = next(stream)
+        assert isinstance(batch_tensor, Tensor)
+        assert batch_tensor.topology == (batch, seq)
+        assert batch_tensor.unwrap().shape == (2, 8)
+
+
+def test_stateful_topological_stream_standard():
+    # Define axes
+    seq = Axis("seq", 8)
+    batch = Axis("batch", 2)
+
+    # Mock dataset with standard strings
+    mock_data = [
+        {"text": "hello"},
+        {"text": "world"},
+        {"text": "axiom"},
+        {"text": "stream"},
+    ]
+
+    class MockIterator:
+        def __init__(self, data):
+            self.data = data
+            self.idx = 0
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            if self.idx >= len(self.data):
+                raise StopIteration
+            res = self.data[self.idx]
+            self.idx += 1
+            return res
+
+    class MockTokenizer:
+        def encode(self, text):
+            return [5, 6, 7, 8]
+
+    # Patch load_dataset to return our MockIterator/iterable
+    with patch("axionn.data.stream.load_dataset") as mock_load:
+        class MockDataset:
+            def shuffle(self, *args, **kwargs):
+                return self
+            def __iter__(self):
+                return MockIterator(mock_data)
+
+        mock_load.return_value = MockDataset()
+
+        tokenizer = MockTokenizer()
+        stream = build_topological_stream(
+            "dummy_path",
+            seq_ax=seq,
+            batch_ax=batch,
+            tokenizer=tokenizer,
+            text_key="text"
+        )
+
+        # Draw a batch from the stream
+        batch_tensor = next(stream)
+        assert isinstance(batch_tensor, Tensor)
+        assert batch_tensor.topology == (batch, seq)
+        assert batch_tensor.unwrap().shape == (2, 8)
 
 
 def test_swa_forward():
@@ -686,3 +809,9 @@ def test_local_run_logger():
         assert step_2_data["step"] == 2
         assert abs(step_2_data["loss"] - 1.8) < 1e-5
         assert "tokens_per_sec" in step_2_data
+
+
+if __name__ == "__main__":
+    import pytest
+    import sys
+    sys.exit(pytest.main([__file__]))

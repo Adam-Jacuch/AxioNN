@@ -4,7 +4,7 @@ import optax
 from transformers import AutoTokenizer
 from axiom import ax, nn
 from axionn.nn import MHA
-from axionn.training import build_trainer, LocalRunLogger
+from axionn.training import Trainer, LocalRunLogger
 from axionn.data.stream import build_topological_stream
 
 @dataclass
@@ -41,9 +41,9 @@ tokenizer = AutoTokenizer.from_pretrained("mistralai/Mistral-7B-v0.1")
 dataset_path = "roneneldan/TinyStories"
 stream = build_topological_stream(dataset_path, seq_ax=cfg.s, batch_ax=cfg.b, tokenizer=tokenizer)
 
-# 3. Build Trainer Generator (using our Adam optimizer and build_trainer)
+# 3. Build Trainer (using our Adam optimizer and Trainer class)
 optimizer = optax.adam(1e-3)
-trainer = build_trainer(transformer, optimizer, autoregressive=cfg.s)
+trainer = Trainer(transformer, optimizer, autoregressive=cfg.s)
 
 # Initialize LocalRunLogger with configuration hyperparameters
 logger = LocalRunLogger(
@@ -58,11 +58,11 @@ logger = LocalRunLogger(
     }
 )
 
-# 4. Train using the generator .send() interface and log progress!
+# 4. Train using the .step() interface and log progress!
 print("Training on dynamically tokenized TinyStories with Mistral 32k...")
 for i in range(1000):
     x_batch = next(stream)
-    loss = trainer.send(x_batch)
+    loss = trainer.step(x_batch)
     
     # Calculate tokens processed in this batch to log throughput
     tokens_processed = cfg.b.size * cfg.s.size
